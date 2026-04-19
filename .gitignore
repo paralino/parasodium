@@ -1,0 +1,15 @@
+# CI clones upstream libsodium beside this project; never track it.
+libsodium-src/
+
+*.iml
+.gradle/
+.kotlin/
+/.idea
+.DS_Store
+/build
+/captures
+.externalNativeBuild
+.cxx
+
+local.properties
+user.properties

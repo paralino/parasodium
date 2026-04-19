@@ -1,0 +1,107 @@
+# Manually rebuild bundled libsodium shared libraries for Android (all ABIs) and open a PR.
+# Build steps follow https://doc.libsodium.org/installation (Cross-compiling to Android): set
+# ANDROID_NDK_HOME and run ./dist-build/android-aar.sh from a libsodium source tree.
+#
+# Repository secret CREATE_PULL_REQUEST_PAT: a Personal Access Token used only for the PR step.
+# Pushes made with the default GITHUB_TOKEN do not trigger other workflows (e.g. pull_request).
+# A PAT makes the PR branch push a normal identity so CI such as test_runs.yml runs on the PR.
+
+name: Update libsodium Android libraries
+
+on:
+  workflow_dispatch:
+    inputs:
+      libsodium_ref:
+        description: "Git ref for jedisct1/libsodium (leave empty to use the latest GitHub release tag)"
+        required: false
+        default: ""
+
+env:
+  NDK_PLATFORM: android-28
+
+jobs:
+  build-and-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Resolve libsodium ref
+        id: libsodium_ref
+        run: |
+          REF="${{ github.event.inputs.libsodium_ref }}"
+          if [ -z "$REF" ]; then
+            REF=$(curl -fsSL https://api.github.com/repos/jedisct1/libsodium/releases/latest | jq -r .tag_name)
+            if [ -z "$REF" ] || [ "$REF" = "null" ]; then
+              REF="stable"
+            fi
+          fi
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+          SAFE=$(echo "$REF" | tr '/:' '--')
+          echo "branch_suffix=$SAFE" >> "$GITHUB_OUTPUT"
+          echo "Using jedisct1/libsodium ref: $REF"
+
+      - name: Checkout libsodium
+        uses: actions/checkout@v6
+        with:
+          repository: jedisct1/libsodium
+          ref: ${{ steps.libsodium_ref.outputs.ref }}
+          path: libsodium-src
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential automake autoconf libtool pkg-config zip jq curl
+
+      - name: Bootstrap libsodium (autogen)
+        working-directory: libsodium-src
+        run: ./autogen.sh -s
+
+      - name: Install Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r28b
+
+      - name: Run dist-build/android-aar.sh
+        working-directory: libsodium-src
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: ./dist-build/android-aar.sh
+
+      - name: Copy libsodium.so into jniLibs
+        run: |
+          set -euo pipefail
+          AAR="$(ls libsodium-src/libsodium-*.aar | head -1)"
+          test -f "$AAR"
+          rm -rf /tmp/libsodium-aar
+          unzip -qo "$AAR" -d /tmp/libsodium-aar
+          SRC_BASE=/tmp/libsodium-aar/prefab/modules/sodium/libs
+          install -m0755 "$SRC_BASE/android.arm64-v8a/libsodium.so" parasodium/src/main/jniLibs/arm64-v8a/libsodium.so
+          install -m0755 "$SRC_BASE/android.armeabi-v7a/libsodium.so" parasodium/src/main/jniLibs/armeabi-v7a/libsodium.so
+          install -m0755 "$SRC_BASE/android.x86/libsodium.so" parasodium/src/main/jniLibs/x86/libsodium.so
+          install -m0755 "$SRC_BASE/android.x86_64/libsodium.so" parasodium/src/main/jniLibs/x86_64/libsodium.so
+
+      # Nested clone under the repo root is a separate Git repo; remove it so the PR cannot record it as a gitlink/submodule.
+      - name: Remove libsodium build tree
+        run: rm -rf libsodium-src
+
+      - name: Create pull request
+        uses: peter-evans/create-pull-request@v8
+        with:
+          token: ${{ secrets.CREATE_PULL_REQUEST_PAT }}
+          add-paths: |
+            parasodium/src/main/jniLibs/**
+          commit-message: "Update bundled libsodium Android .so (${{ steps.libsodium_ref.outputs.ref }})"
+          title: "Update libsodium Android prebuilts (${{ steps.libsodium_ref.outputs.ref }})"
+          body: |
+            Automated update from workflow **Update libsodium Android libraries**.
+
+            - **libsodium ref:** `${{ steps.libsodium_ref.outputs.ref }}`
+            - **Build:** `dist-build/android-aar.sh` on `ubuntu-latest` with `NDK_PLATFORM=${{ env.NDK_PLATFORM }}` and [Android NDK](https://developer.android.com/ndk) via [nttld/setup-ndk](https://github.com/nttld/setup-ndk)
+            - **Source layout:** [installation docs — Android](https://doc.libsodium.org/installation)
+
+            Shared libraries were taken from the generated AAR prefab package (`prefab/modules/sodium`, full non-minimal build) and copied into `parasodium/src/main/jniLibs/<abi>/`.
+          branch: chore/update-libsodium-android-${{ steps.libsodium_ref.outputs.branch_suffix }}
+          delete-branch: true
