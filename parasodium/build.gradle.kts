@@ -32,8 +32,10 @@ android {
         }
     }
 
-    sourceSets.getByName("main") {
-        jniLibs.srcDirs("src/main/jniLibs")
+    sourceSets {
+        getByName("main") {
+            jniLibs.directories.add("src/main/jniLibs")
+        }
     }
 
     compileOptions {
@@ -70,7 +72,6 @@ dependencies {
     implementation(parasodiumlibs.java.jna) {
         artifact { type = "aar" }
     }
-    implementation(parasodiumlibs.androidx.core.ktx)
     androidTestImplementation(parasodiumlibs.androidx.test.core)
     androidTestImplementation(parasodiumlibs.androidx.test.ext.junit)
     androidTestImplementation(parasodiumlibs.androidx.test.rules)
